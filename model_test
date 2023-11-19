@@ -103,5 +103,5 @@ for j, (data,labels) in enumerate(test_loader, 0):
     out = output.argmax(dim=1)
     num_a += (out == labels[0]).sum().item()
     num_b += f1_score(labels[0],out)
-print('Accuracy:', num_a / validNumber)
-print('f1score:',num_b / (validNumber/batchsize))
+print('Accuracy:', num_a / testNumber)
+print('f1score:',num_b / (testNumber/batchsize))
