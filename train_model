@@ -1,0 +1,136 @@
+import torch
+from transformers import BertModel, BertTokenizer, BertConfig
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+config = BertConfig.from_pretrained('bert-base-uncased')
+config.update({'output_hidden_states':True}) 
+model = BertModel.from_pretrained("bert-base-uncased",config=config)
+
+from torch.utils.data import DataLoader,Dataset
+import os
+import re
+from random import sample
+import numpy as np
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from transformers import BertModel, BertTokenizer
+from tqdm import tqdm
+from sklearn.metrics import f1_score
+
+data_base_path = r"./aclImdb_v1.tar_files/aclImdb"
+model_path = r"./mode"
+class ImdbDataset(Dataset):
+    def __init__(self,mode,testNumber=10000,validNumber=5000):
+        super(ImdbDataset,self).__init__()
+        text_path =  [os.path.join(data_base_path,i)  for i in ["test/neg","test/pos"]]
+        traintext_path = [os.path.join(data_base_path,i)  for i in ["train/neg","train/pos"]]
+        if mode=="train":
+            self.total_file_path_list = []
+            for i in traintext_path:
+                self.total_file_path_list.extend([os.path.join(i,j) for j in os.listdir(i)])
+        if mode=="test":
+            self.total_file_path_list = []
+            for i in text_path:
+                self.total_file_path_list.extend([os.path.join(i,j) for j in os.listdir(i)])
+                self.total_file_path_list=sample(self.total_file_path_list,testNumber)
+        if mode=="valid":
+            self.total_file_path_list = []
+            for i in text_path:
+                self.total_file_path_list.extend([os.path.join(i,j) for j in os.listdir(i)])
+                self.total_file_path_list=sample(self.total_file_path_list,validNumber)
+    def tokenize(self,text):
+        fileters = ['!','"','#','$','%','&','\(','\)','\*','\+',',','-','\.','/',':',';','<','=','>','\?','@'
+            ,'\[','\\','\]','^','_','`','\{','\|','\}','~','\t','\n','\x97','\x96','”','“',]
+        text = re.sub("<.*?>"," ",text,flags=re.S)
+        text = re.sub("|".join(fileters)," ",text,flags=re.S)
+        return text
+    def __getitem__(self, idx):
+        cur_path = self.total_file_path_list[idx]
+        cur_filename = os.path.basename(cur_path)
+        labels = []
+        sentences = []
+        if int(cur_filename.split("_")[-1].split(".")[0]) <= 5 :
+            label = 0
+        else:
+            label = 1
+        labels.append(label)
+        text = self.tokenize(open(cur_path,encoding='UTF-8').read().strip())
+        sentences.append(text)
+        return sentences,labels
+    def __len__(self):
+        return len(self.total_file_path_list)
+class BertClassificationModel(nn.Module):
+    def __init__(self,hidden_size=768):
+        super(BertClassificationModel, self).__init__()
+        model_name = 'bert-base-uncased'
+        self.tokenizer = BertTokenizer.from_pretrained(pretrained_model_name_or_path=model_name)
+        self.bert = BertModel.from_pretrained(pretrained_model_name_or_path=model_name)
+
+        for p in self.bert.parameters(): 
+                p.requires_grad = False
+        self.fc = nn.Linear(hidden_size,2)
+    def forward(self, batch_sentences):
+        sentences_tokenizer = self.tokenizer(batch_sentences,
+                                             truncation=True,
+                                             padding=True,
+                                             max_length=512,
+                                             add_special_tokens=True)
+        input_ids=torch.tensor(sentences_tokenizer['input_ids']) 
+        attention_mask=torch.tensor(sentences_tokenizer['attention_mask']) 
+        bert_out=self.bert(input_ids=input_ids,attention_mask=attention_mask) 
+        last_hidden_state =bert_out[0] # [batch_size, sequence_length, hidden_size] 
+        bert_cls_hidden_state=last_hidden_state[:,0,:] 
+        fc_out=self.fc(bert_cls_hidden_state) 
+        return fc_out
+def main():
+    testNumber = 10000
+    validNumber = 2500
+    batchsize = 100
+    trainDatas = ImdbDataset(mode="train",testNumber=testNumber) 
+    testDatas = ImdbDataset(mode="test",testNumber=testNumber) 
+    validDatas = ImdbDataset(mode="valid",validNumber=validNumber) 
+    train_loader = torch.utils.data.DataLoader(trainDatas, batch_size=batchsize, shuffle=False)
+    val_loader = torch.utils.data.DataLoader(validDatas, batch_size=batchsize, shuffle=False)
+    epoch_num = 4
+    print('training...')
+    model=BertClassificationModel()
+    optimizer = optim.AdamW(model.parameters(), lr=5e-5) 
+    criterion = nn.CrossEntropyLoss()
+    
+    print("模型数据已经加载完成,现在开始模型训练。")
+    for epoch in range(epoch_num):
+        model.train()
+        for i, (data,labels) in enumerate(train_loader, 0):
+            output = model(data[0])
+            optimizer.zero_grad()  # 梯度清0
+            loss = criterion(output, labels[0])  # 计算误差
+            loss.backward()  # 反向传播
+            optimizer.step()  # 更新参数
+            # 打印一下每一次数据扔进去学习的进展
+            print('batch:%d loss:%.5f' % (i, loss.item()))
+        # 打印一下每个epoch的深度学习的进展
+        print('epoch:%d loss:%.5f' % (epoch, loss.item()))
+        num_a = 0
+        num_b = 0
+        model.eval()
+        print('testing......')
+        import pickle
+        print('saving...')
+        with open('model.pkl', 'wb') as f:
+            pickle.dump(model, f)
+        print('模型中途数据保存完毕')#保存中途得到的模型
+        for j, (data,labels) in enumerate(val_loader, 0):
+            output = model(data[0])
+            out = output.argmax(dim=1)
+            num_a += (out == labels[0]).sum().item()
+            num_b += f1_score(labels[0],out)
+        print('Accuracy:', num_a / validNumber)#计算Acc值 输出
+        print('f1score:',num_b / (validNumber/batchsize))#计算f1score值 输出
+    import pickle
+    print('saving...')
+    with open('model.pkl', 'wb') as f:
+        pickle.dump(model, f)
+    print('模型数据保存完毕') #保存最终模型
+    
+if __name__ == '__main__':
+    main()
